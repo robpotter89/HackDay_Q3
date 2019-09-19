@@ -15,7 +15,7 @@ from image_match.goldberg import ImageSignature
 from logbook import Logger
 
 
-class ImageDiscoveryES(SignatureES):
+class AdES(SignatureES):
     def make_record_from_signature_base64(
         self, signature, path=None, metadata=None
     ):
@@ -104,7 +104,7 @@ ADD_IMAGE_URL_NO_SIGNATURE_MSG_FORMAT = 'Failed to get signature for: {}'
 ADD_IMAGE_URL_CONFLICT_MSG_FORMAT = 'Conflict, retrying: {}'
 
 
-class ImageMatchLoader(object):
+class AdLoader(object):
     def __init__(
         self,
         index,
@@ -115,7 +115,7 @@ class ImageMatchLoader(object):
     ):
         self._iss = ImageSignatureService()
         self._es = Elasticsearch(hosts=hosts)
-        self._ides = ImageDiscoveryES(
+        self._aes = AdES(
             self._es, index=index, distance_cutoff=distance_cutoff
         )
 
@@ -139,17 +139,17 @@ class ImageMatchLoader(object):
         self.num_images_errored = 0
 
     def create_index(self):
-        self._es.indices.create(self._ides.index, ignore=400)
+        self._es.indices.create(self._aes.index, ignore=400)
 
     def delete_index(self):
-        self._es.indices.delete(index=self._ides.index)
+        self._es.indices.delete(index=self._aes.index)
 
     def wipe_index(self):
         self.delete_index()
         self.create_index()
 
     def refresh_index(self):
-        self._es.indices.refresh(index=self._ides.index)
+        self._es.indices.refresh(index=self._aes.index)
 
     def _add_image_to_index(
             self,
@@ -174,7 +174,7 @@ class ImageMatchLoader(object):
         existing_document = None
         try:
             get_result = self._es.get(
-                index=self._ides.index, doc_type=self._ides.doc_type, id=_id
+                index=self._aes.index, doc_type=self._aes.doc_type, id=_id
             )
             existing_document = get_result['_source']
 
@@ -187,8 +187,8 @@ class ImageMatchLoader(object):
             ]
             existing_sources.append(source)
             self._es.update(
-                index=self._ides.index,
-                doc_type=self._ides.doc_type,
+                index=self._aes.index,
+                doc_type=self._aes.doc_type,
                 id=_id,
                 body={'doc': existing_document}
             )
@@ -199,7 +199,7 @@ class ImageMatchLoader(object):
                 METADATA_SOURCES_KEY: [source],
                 METADATA_IMAGE_KEY: image
             }
-            self._ides.add_image_signature_base64(
+            self._aes.add_image_signature_base64(
                 _id, image_signature, path=image_url, metadata=metadata
             )
             self.num_images_inserted += 1
@@ -288,11 +288,11 @@ class ImageMatchLoader(object):
             return matched_urls
 
     def get_image_match_by_image_url(self, image_url):
-        image_matches = self._ides.search_image(image_url)
+        image_matches = self._aes.search_image(image_url)
         return self._get_matched_urls_from_image_matches(image_matches)
 
     def get_image_match_by_image_signature_base64(self, image_signature):
-        image_matches = self._ides.search_image_signature_base64(
+        image_matches = self._aes.search_image_signature_base64(
             image_signature
         )
         return self._get_matched_urls_from_image_matches(image_matches)
@@ -315,7 +315,7 @@ class ImageSignatureService(object):
         base64_signature = image_signature_array_to_base64(
             self._gis.generate_signature(image_bytes, bytestream=True)
         )
-        base64_image = b64encode(image_bytes)
+        base64_image = b64encode(image_bytes).decode()
         return base64_signature, base64_image
 
     def get_image_signature_from_file_path(self, image_file_path):
