@@ -1,13 +1,17 @@
 import hashlib
 from datetime import datetime
 from operator import itemgetter
+from base64 import b64encode, b64decode
 
+import numpy
 import requests
+from requests.exceptions import HTTPError
 from elasticsearch import Elasticsearch
 from elasticsearch.exceptions import ConflictError, NotFoundError
 from furl import furl
 from image_match import signature_database_base
 from image_match.elasticsearch_driver import SignatureES
+from image_match.goldberg import ImageSignature
 from logbook import Logger
 
 
@@ -83,11 +87,21 @@ class ImageDiscoveryES(SignatureES):
         )
 
 MAX_CONFLICT_RETRIES = 3
+MAX_RETRIES = 3
 
 METADATA_SOURCES_KEY = 'sources'
 SOURCE_URL_KEY = 'url'
-SOURCE_SKU_KEY = 'sku'
-SOURCE_STORE_KEY = 'store'
+SOURCE_DOMAIN_KEY = 'domain'
+SOURCE_EMAIL_KEY = 'email'
+SOURCE_AGE_KEY = 'age'
+SOURCE_GENDER_KEY = 'gender'
+SOURCE_INTERESTS_KEY = 'interests'
+
+METADATA_IMAGE_KEY = 'image'
+
+ADD_IMAGE_URL_MSG_FORMAT = 'Adding: {}'
+ADD_IMAGE_URL_NO_SIGNATURE_MSG_FORMAT = 'Failed to get signature for: {}'
+ADD_IMAGE_URL_CONFLICT_MSG_FORMAT = 'Conflict, retrying: {}'
 
 
 class ImageMatchLoader(object):
@@ -122,7 +136,6 @@ class ImageMatchLoader(object):
 
         self.num_images_inserted = 0
         self.num_images_updated = 0
-        self.num_images_unchanged = 0
         self.num_images_errored = 0
 
     def create_index(self):
@@ -138,11 +151,24 @@ class ImageMatchLoader(object):
     def refresh_index(self):
         self._es.indices.refresh(index=self._ides.index)
 
-    def _add_image_to_index(self, image_signature, image_url, sku, url):
+    def _add_image_to_index(
+            self,
+            image_signature,
+            image,
+            image_url,
+            source_url,
+            email,
+            age,
+            gender,
+            interests
+    ):
         source = {
-            SOURCE_SKU_KEY: sku,
-            SOURCE_URL_KEY: url,
-            SOURCE_STORE_KEY: self.store
+            SOURCE_URL_KEY: source_url,
+            SOURCE_DOMAIN_KEY: furl(source_url).netloc,
+            SOURCE_EMAIL_KEY: email,
+            SOURCE_AGE_KEY: age,
+            SOURCE_GENDER_KEY: gender,
+            SOURCE_INTERESTS_KEY: interests
         }
         _id = hashlib.sha512(image_signature.encode('utf-8')).hexdigest()
         existing_document = None
@@ -159,47 +185,48 @@ class ImageMatchLoader(object):
             existing_sources = existing_document['metadata'][
                 METADATA_SOURCES_KEY
             ]
-            previously_found_by_sku = False
-            for existing_source in existing_sources:
-                if sku == existing_source[SOURCE_SKU_KEY]:
-                    previously_found_by_sku = True
-                    break
-
-            if previously_found_by_sku:
-                self.logger.debug(
-                    ALREADY_HAVE_IMAGE_URL_MSG_FORMAT.format(
-                        image_url=image_url, sku=sku
-                    )
-                )
-                self.num_images_unchanged += 1
-
-            else:
-                self.logger.debug(
-                    FOUND_EXISTING_IMAGE_URL_NEW_SKU_MSG_FORMAT.format(
-                        image_url=image_url, sku=sku
-                    )
-                )
-                existing_sources.append(source)
-                self._es.update(
-                    index=self._ides.index,
-                    doc_type=self._ides.doc_type,
-                    id=_id,
-                    body={'doc': existing_document}
-                )
-                self.num_images_updated += 1
+            existing_sources.append(source)
+            self._es.update(
+                index=self._ides.index,
+                doc_type=self._ides.doc_type,
+                id=_id,
+                body={'doc': existing_document}
+            )
+            self.num_images_updated += 1
 
         else:
             metadata = {
-                METADATA_SOURCES_KEY: [source]
+                METADATA_SOURCES_KEY: [source],
+                METADATA_IMAGE_KEY: image
             }
             self._ides.add_image_signature_base64(
                 _id, image_signature, path=image_url, metadata=metadata
             )
             self.num_images_inserted += 1
 
-    def _add_image(self, image_signature, image_url, sku, url, retry_num=0):
+    def _add_image(
+            self,
+            image_signature,
+            image,
+            image_url,
+            source_url,
+            email,
+            age,
+            gender,
+            interests,
+            retry_num=0
+    ):
         try:
-            self._add_image_to_index(image_signature, image_url, sku, url)
+            self._add_image_to_index(
+                image_signature,
+                image,
+                image_url,
+                source_url,
+                email,
+                age,
+                gender,
+                interests
+            )
 
         except ConflictError:
             if retry_num >= MAX_CONFLICT_RETRIES:
@@ -212,15 +239,34 @@ class ImageMatchLoader(object):
                 )
                 retry_num += 1
                 self._add_image(
-                    image_signature, image_url, sku, url, retry_num=retry_num
+                    image_signature,
+                    image,
+                    image_url,
+                    source_url,
+                    email,
+                    age,
+                    gender,
+                    interests,
+                    retry_num=retry_num
                 )
 
-    def add_image(self, image_url, sku, url):
+    def add_image(self, image_url, source_url, email, age, gender, interests):
         try:
             self.logger.debug(ADD_IMAGE_URL_MSG_FORMAT.format(image_url))
-            image_signature = self._iss.get_image_signature_from_url(image_url)
+            image_signature, image = self._iss.get_image_signature_from_url(
+                image_url
+            )
             if image_signature:
-                self._add_image(image_signature, image_url, sku, url)
+                self._add_image(
+                    image_signature,
+                    image,
+                    image_url,
+                    source_url,
+                    email,
+                    age,
+                    gender,
+                    interests
+                )
 
             else:
                 self.logger.warning(
@@ -228,9 +274,6 @@ class ImageMatchLoader(object):
                 )
 
         except self.exceptions_to_reraise:
-            raise
-
-        except ProductPageTimeoutError:
             raise
 
         except Exception:
@@ -266,20 +309,14 @@ def image_signature_base64_to_array(image_signature_base64):
 class ImageSignatureService(object):
     def __init__(self):
         self._gis = ImageSignature()
-        self._logger = PILogger(__name__)
+        self._logger = Logger(self.__class__.__name__)
 
     def get_image_signature_from_bytes(self, image_bytes):
-        image = Image.open(BytesIO(image_bytes))
-        if not image:
-            return
-
-        image_bytes_io = BytesIO()
-        image.save(image_bytes_io, format=image.format)
-        result = self._gis.generate_signature(
-            image_bytes_io.getvalue(), bytestream=True
+        base64_signature = image_signature_array_to_base64(
+            self._gis.generate_signature(image_bytes, bytestream=True)
         )
-        result = image_signature_array_to_base64(result)
-        return result
+        base64_image = b64encode(image_bytes)
+        return base64_signature, base64_image
 
     def get_image_signature_from_file_path(self, image_file_path):
         with open(image_file_path, 'rb') as image_file:
