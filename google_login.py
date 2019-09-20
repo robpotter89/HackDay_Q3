@@ -6,7 +6,6 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.common.exceptions import TimeoutException
-import time
 
 chrome_options = Options()
 chromeOptions = webdriver.ChromeOptions()
@@ -26,7 +25,7 @@ def read_all_logins(conf_file):
     return accounts
 
 
-def google_login(username, password, meta):
+def google_login(username, password, meta):  # See test_cookies for example on how to use the cookies field from the dictionary
     driver = webdriver.Chrome(options=chrome_options)
 
     driver.get('https://accounts.google.com/ServiceLogin?hl=en&passive=true&continue=https://www.google.com/')
@@ -55,18 +54,20 @@ def google_login(username, password, meta):
 
     cookies = driver.get_cookies()
 
+    for cookie in cookies:
+        cookie['expiry'] = int(cookie['expiry'])  # expiry being an integer is part of the Webdriver specs
+
     driver.close()
     return {'username': username, 'cookies': cookies, 'meta': meta}
 
 
-def test_cookies(c):
+def test_cookies(c):  # Returns true for valid login cookies
     driver = webdriver.Chrome(options=chrome_options)
 
-    driver.get('https://www.google.com/')
+    driver.get('https://www.google.com/')  # Note that due to WebDriver specs, the cookie must be added while on the original domain
     driver.delete_all_cookies()
 
     for d in c:
-        d['expiry'] = int(d['expiry'])
         driver.add_cookie(d)
 
     driver.get('https://adssettings.google.com/authenticated')
