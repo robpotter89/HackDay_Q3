@@ -5,16 +5,21 @@ from six import BytesIO
 import base64
 from PIL import Image
 
+USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/77.0.3865.75 Safari/537.36'
+
 
 def get_ad_images_from_url(url, debug=False):
     ads = []
     chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument('--user-agent=%s' % USER_AGENT)
     driver = webdriver.Chrome(options=chrome_options)
     page_pil_image = None
     try:
         driver.get(url)
         sleep(5)
-        driver.maximize_window()
+        driver.set_window_size(2160, 4096)
+        sleep(1)
         all_iframes = driver.find_elements_by_tag_name("iframe")
         for iframe in all_iframes:
             try:
