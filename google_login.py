@@ -55,7 +55,7 @@ def google_login(username, password, meta):  # See test_cookies for example on h
     cookies = driver.get_cookies()
 
     for cookie in cookies:
-        cookie['expiry'] = int(cookie['expiry'])  # expiry being an integer is part of the Webdriver specs
+        cookie['expiry'] = int(cookie['expiry'])  # expiry being an integer is part of the WebDriver specs
 
     driver.close()
     return {'username': username, 'cookies': cookies, 'meta': meta}
