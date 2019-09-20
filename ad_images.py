@@ -12,6 +12,7 @@ def get_ad_images_from_url(url, debug=False):
     ads = []
     chrome_options = Options()
     chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--incognito")
     chrome_options.add_argument('--user-agent=%s' % USER_AGENT)
     driver = webdriver.Chrome(options=chrome_options)
     page_pil_image = None
@@ -31,12 +32,12 @@ def get_ad_images_from_url(url, debug=False):
                         'outerHTML'
                     )
                 )
-                is_ad = 'tpc.googlesyndication' in iframe_html
+                is_ad = 'google' in iframe_html
                 if is_ad:
                     ads.append((iframe_location, iframe_size))
 
             except Exception as e:
-                print("exception", e)
+                print("Exception getting iframe:", e)
 
             finally:
                 driver.switch_to.default_content()
@@ -49,7 +50,7 @@ def get_ad_images_from_url(url, debug=False):
             page_pil_image.show()
 
     except Exception as e:
-        print("exception", e)
+        print("Exception using driver:", e)
 
     finally:
         driver.quit()
@@ -57,20 +58,24 @@ def get_ad_images_from_url(url, debug=False):
     ad_base64_images = []
     if page_pil_image:
         for ad in ads:
-            location = ad[0]
-            size = ad[1]
-            left = location['x']
-            top = location['y']
-            right = location['x'] + size['width']
-            bottom = location['y'] + size['height']
-            output = BytesIO()
-            ad_pil_image = page_pil_image.crop((left, top, right, bottom))
-            if debug:
-                ad_pil_image.show()
+            try:
+                location = ad[0]
+                size = ad[1]
+                left = location['x']
+                top = location['y']
+                right = location['x'] + size['width']
+                bottom = location['y'] + size['height']
+                output = BytesIO()
+                ad_pil_image = page_pil_image.crop((left, top, right, bottom))
+                if debug:
+                    ad_pil_image.show()
 
-            ad_pil_image.save(output, format='PNG')
-            output.seek(0)
-            ad_base64_image = base64.b64encode(output.read())
-            ad_base64_images.append(ad_base64_image)
+                ad_pil_image.save(output, format='PNG')
+                output.seek(0)
+                ad_base64_image = base64.b64encode(output.read())
+                ad_base64_images.append(ad_base64_image)
+
+            except Exception as e:
+                print('Exception cropping image:', e)
 
     return ad_base64_images
