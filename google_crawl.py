@@ -16,56 +16,166 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
+import time
+from bs4 import BeautifulSoup
+from selenium import webdriver
+
+from selenium.webdriver.remote.webelement import WebElement
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver import ActionChains
+import PIL
+
+
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from __future__ import absolute_import
+from celery_tasks.celery import app
+import time
+import requests
+from pymongo import MongoClient
+from requests import RequestException
+from requests_html import HTMLSession
+import re
+
 
 from collect_links import CollectLinks
 
 
-class Sites:
-    GOOGLE = 1
-    NAVER = 2
-    GOOGLE_FULL = 3
-    NAVER_FULL = 4
+import selenium.webdriver
+import time
+from os import environ
+from abc import abstractmethod
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 
-    @staticmethod
-    def get_text(code):
-        if code == Sites.GOOGLE:
-            return 'google'
-        elif code == Sites.NAVER:
-            return 'naver'
-        elif code == Sites.GOOGLE_FULL:
-            return 'google'
-        elif code == Sites.NAVER_FULL:
-            return 'naver'
 
-    @staticmethod
-    def get_face_url(code):
-        if code == Sites.GOOGLE or Sites.GOOGLE_FULL:
-            return "&tbs=itp:face"
-        if code == Sites.NAVER or Sites.NAVER_FULL:
-            return "&face=1"
+class Scraper(object):
+    """
+    Wrapper for selenium Chrome driver with methods to scroll through a page and
+    to scrape and parse info from a linkedin page
 
+    Params:
+        - cookie {str}: li_at session cookie required to scrape linkedin profiles
+        - driver {webdriver}: driver to be used for scraping
+        - scroll_pause {float}: amount of time to pause (s) while incrementally
+        scrolling through the page
+        - scroll_increment {int}: pixel increment for scrolling
+        - timeout {float}: time to wait for page to load first batch of async content
+    """
+
+    def __init__(self, cookie=None, scraperInstance=None, driver=selenium.webdriver.Chrome, driver_options={}, scroll_pause=0.1, scroll_increment=300, timeout=10):
+        if type(self) is Scraper:
+            raise Exception(
+                'Scraper is an abstract class and cannot be instantiated directly')
+
+        if scraperInstance:
+            self.was_passed_instance = True
+            self.driver = scraperInstance.driver
+            self.scroll_increment = scraperInstance.scroll_increment
+            self.timeout = scraperInstance.timeout
+            self.scroll_pause = scraperInstance.scroll_pause
+            return
+
+        self.was_passed_instance = False
+        self.driver = driver(**driver_options)
+        self.scroll_pause = scroll_pause
+        self.scroll_increment = scroll_increment
+        self.timeout = timeout
+        self.driver.get('http://www.linkedin.com')
+        self.driver.set_window_size(1920, 1080)
+
+        if 'LI_EMAIL' in environ and 'LI_PASS' in environ:
+            self.login(environ['LI_EMAIL'], environ['LI_PASS'])
+        else:
+            if not cookie and 'LI_AT' not in environ:
+                raise ValueError(
+                    'Must either define LI_AT environment variable, or pass a cookie string to the Scraper')
+            elif not cookie:
+                cookie = environ['LI_AT']
+            self.driver.add_cookie({
+                'name': 'li_at',
+                'value': cookie,
+                'domain': '.linkedin.com'
+            })
+
+    @abstractmethod
+    def scrape(self):
+        raise Exception('Must override abstract method scrape')
+
+    def login(self, email, password):
+        email_input = self.driver.find_element_by_css_selector(
+            'input.login-email')
+        password_input = self.driver.find_element_by_css_selector(
+            'input.login-password')
+        email_input.send_keys(email)
+        password_input.send_keys(password)
+        password_input.send_keys(Keys.ENTER)
+
+    def get_html(self, url):
+        self.load_profile_page(url)
+        return self.driver.page_source
+
+    def scroll_to_bottom(self):
+        """Scroll to the bottom of the page
+
+        Params:
+            - scroll_pause_time {float}: time to wait (s) between page scroll increments
+            - scroll_increment {int}: increment size of page scrolls (pixels)
+        """
+        expandable_button_selectors = [
+            'button[aria-expanded="false"].pv-skills-section__additional-skills',
+            'button[aria-expanded="false"].pv-profile-section__see-more-inline',
+            'button[aria-expanded="false"].pv-top-card-section__summary-toggle-button',
+            'button[data-control-name="contact_see_more"]'
+        ]
+
+        current_height = 0
+        while True:
+            for name in expandable_button_selectors:
+                try:
+                    self.driver.find_element_by_css_selector(name).click()
+                except:
+                    pass
+
+            # Use JQuery to click on invisible expandable 'see more...' elements
+            self.driver.execute_script('$(".lt-line-clamp__more").click()')
+
+            # Scroll down to bottom
+            new_height = self.driver.execute_script(
+                "return Math.min({}, document.body.scrollHeight)".format(current_height + self.scroll_increment))
+            if (new_height == current_height):
+                break
+            self.driver.execute_script(
+                "window.scrollTo(0, Math.min({}, document.body.scrollHeight));".format(new_height))
+            current_height = new_height
+            # Wait to load page
+            time.sleep(self.scroll_pause)
+
+    def wait(self, condition):
+        return WebDriverWait(self.driver, self.timeout).until(condition)
+
+    def wait_for_el(self, selector):
+        return self.wait(EC.presence_of_element_located((
+            By.CSS_SELECTOR, selector
+        )))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args, **kwargs):
+        self.quit()
+
+    def quit(self):
+        if self.driver and not self.was_passed_instance:
+            self.driver.quit()
 
 class AutoCrawler:
-    def __init__(self, skip_already_exist=True, n_threads=4, do_google=True, do_naver=True, download_path='download',
-                 full_resolution=False, face=False):
-        """
-        :param skip_already_exist: Skips keyword already downloaded before. This is needed when re-downloading.
-        :param n_threads: Number of threads to download.
-        :param do_google: Download from google.com (boolean)
-        :param do_naver: Download from naver.com (boolean)
-        :param download_path: Download folder path
-        :param full_resolution: Download full resolution image instead of thumbnails (slow)
-        :param face: Face search mode
-        """
-
-        self.skip = skip_already_exist
-        self.n_threads = n_threads
-        self.do_google = do_google
-        self.do_naver = do_naver
-        self.download_path = download_path
-        self.full_resolution = full_resolution
-        self.face = face
-
+    def __init__(self):
+      
         os.makedirs('./{}'.format(self.download_path), exist_ok=True)
 
     @staticmethod
@@ -403,7 +513,7 @@ class CollectLinks:
     def google_full(self, keyword, add_url=""):
         print('[Full Resolution Mode]')
 
-        self.browser.get("https://www.google.co.kr/search?q={}&tbm=isch{}".format(keyword, add_url))
+        self.browser.get("https://www.google.com/search?q={}&tbm=isch{}".format(keyword, add_url))
         time.sleep(1)
 
         elem = self.browser.find_element_by_tag_name("body")
@@ -456,32 +566,6 @@ class CollectLinks:
         self.browser.close()
 
         return links
-
-
-
-import time
-from bs4 import BeautifulSoup
-from selenium import webdriver
-
-from selenium.webdriver.remote.webelement import WebElement
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver import ActionChains
-import PIL
-
-
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from __future__ import absolute_import
-from celery_tasks.celery import app
-import time
-import requests
-from pymongo import MongoClient
-from requests import RequestException
-from requests_html import HTMLSession
-import re
-
 
 @app.task(bind=True, default_retry_delay=10)
 def fetch_url_content(self, url, scheme='http'):
@@ -819,25 +903,7 @@ def threaded_crawler_rq(
     max_threads=10,
     scraper_callback=None,
 ):
-    """ Crawl from the given start URLs following links matched by link_regex. In this
-        implementation, we do not actually scrape any information.
 
-        args:
-            start_url (str or list of strs): web site(s) to start crawl
-            link_regex (str): regex to match for links
-        kwargs:
-            user_agent (str): user agent (default: wswp)
-            proxies (list of dicts): a list of possible dicts
-                for http / https proxies
-                For formatting, see the requests library
-            delay (int): seconds to throttle between requests to one domain
-                        (default: 3)
-            max_depth (int): maximum crawl depth (to avoid traps) (default: 4)
-            num_retries (int): # of retries when 5xx error (default: 2)
-            cache (dict): cache dict with urls as keys
-                          and dicts for responses (default: {})
-            scraper_callback: function to be called on url and html content
-    """
     crawl_queue = RedisQueue()
     crawl_queue.push(start_url)
     # keep track which URL's have seen before
