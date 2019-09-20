@@ -16,56 +16,166 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
+import time
+from bs4 import BeautifulSoup
+from selenium import webdriver
+
+from selenium.webdriver.remote.webelement import WebElement
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver import ActionChains
+import PIL
+
+
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from __future__ import absolute_import
+from celery_tasks.celery import app
+import time
+import requests
+from pymongo import MongoClient
+from requests import RequestException
+from requests_html import HTMLSession
+import re
+
 
 from collect_links import CollectLinks
 
 
-class Sites:
-    GOOGLE = 1
-    NAVER = 2
-    GOOGLE_FULL = 3
-    NAVER_FULL = 4
+import selenium.webdriver
+import time
+from os import environ
+from abc import abstractmethod
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 
-    @staticmethod
-    def get_text(code):
-        if code == Sites.GOOGLE:
-            return 'google'
-        elif code == Sites.NAVER:
-            return 'naver'
-        elif code == Sites.GOOGLE_FULL:
-            return 'google'
-        elif code == Sites.NAVER_FULL:
-            return 'naver'
 
-    @staticmethod
-    def get_face_url(code):
-        if code == Sites.GOOGLE or Sites.GOOGLE_FULL:
-            return "&tbs=itp:face"
-        if code == Sites.NAVER or Sites.NAVER_FULL:
-            return "&face=1"
+class Scraper(object):
+    """
+    Wrapper for selenium Chrome driver with methods to scroll through a page and
+    to scrape and parse info from a linkedin page
 
+    Params:
+        - cookie {str}: li_at session cookie required to scrape linkedin profiles
+        - driver {webdriver}: driver to be used for scraping
+        - scroll_pause {float}: amount of time to pause (s) while incrementally
+        scrolling through the page
+        - scroll_increment {int}: pixel increment for scrolling
+        - timeout {float}: time to wait for page to load first batch of async content
+    """
+
+    def __init__(self, cookie=None, scraperInstance=None, driver=selenium.webdriver.Chrome, driver_options={}, scroll_pause=0.1, scroll_increment=300, timeout=10):
+        if type(self) is Scraper:
+            raise Exception(
+                'Scraper is an abstract class and cannot be instantiated directly')
+
+        if scraperInstance:
+            self.was_passed_instance = True
+            self.driver = scraperInstance.driver
+            self.scroll_increment = scraperInstance.scroll_increment
+            self.timeout = scraperInstance.timeout
+            self.scroll_pause = scraperInstance.scroll_pause
+            return
+
+        self.was_passed_instance = False
+        self.driver = driver(**driver_options)
+        self.scroll_pause = scroll_pause
+        self.scroll_increment = scroll_increment
+        self.timeout = timeout
+        self.driver.get('http://www.linkedin.com')
+        self.driver.set_window_size(1920, 1080)
+
+        if 'LI_EMAIL' in environ and 'LI_PASS' in environ:
+            self.login(environ['LI_EMAIL'], environ['LI_PASS'])
+        else:
+            if not cookie and 'LI_AT' not in environ:
+                raise ValueError(
+                    'Must either define LI_AT environment variable, or pass a cookie string to the Scraper')
+            elif not cookie:
+                cookie = environ['LI_AT']
+            self.driver.add_cookie({
+                'name': 'li_at',
+                'value': cookie,
+                'domain': '.linkedin.com'
+            })
+
+    @abstractmethod
+    def scrape(self):
+        raise Exception('Must override abstract method scrape')
+
+    def login(self, email, password):
+        email_input = self.driver.find_element_by_css_selector(
+            'input.login-email')
+        password_input = self.driver.find_element_by_css_selector(
+            'input.login-password')
+        email_input.send_keys(email)
+        password_input.send_keys(password)
+        password_input.send_keys(Keys.ENTER)
+
+    def get_html(self, url):
+        self.load_profile_page(url)
+        return self.driver.page_source
+
+    def scroll_to_bottom(self):
+        """Scroll to the bottom of the page
+
+        Params:
+            - scroll_pause_time {float}: time to wait (s) between page scroll increments
+            - scroll_increment {int}: increment size of page scrolls (pixels)
+        """
+        expandable_button_selectors = [
+            'button[aria-expanded="false"].pv-skills-section__additional-skills',
+            'button[aria-expanded="false"].pv-profile-section__see-more-inline',
+            'button[aria-expanded="false"].pv-top-card-section__summary-toggle-button',
+            'button[data-control-name="contact_see_more"]'
+        ]
+
+        current_height = 0
+        while True:
+            for name in expandable_button_selectors:
+                try:
+                    self.driver.find_element_by_css_selector(name).click()
+                except:
+                    pass
+
+            # Use JQuery to click on invisible expandable 'see more...' elements
+            self.driver.execute_script('$(".lt-line-clamp__more").click()')
+
+            # Scroll down to bottom
+            new_height = self.driver.execute_script(
+                "return Math.min({}, document.body.scrollHeight)".format(current_height + self.scroll_increment))
+            if (new_height == current_height):
+                break
+            self.driver.execute_script(
+                "window.scrollTo(0, Math.min({}, document.body.scrollHeight));".format(new_height))
+            current_height = new_height
+            # Wait to load page
+            time.sleep(self.scroll_pause)
+
+    def wait(self, condition):
+        return WebDriverWait(self.driver, self.timeout).until(condition)
+
+    def wait_for_el(self, selector):
+        return self.wait(EC.presence_of_element_located((
+            By.CSS_SELECTOR, selector
+        )))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args, **kwargs):
+        self.quit()
+
+    def quit(self):
+        if self.driver and not self.was_passed_instance:
+            self.driver.quit()
 
 class AutoCrawler:
-    def __init__(self, skip_already_exist=True, n_threads=4, do_google=True, do_naver=True, download_path='download',
-                 full_resolution=False, face=False):
-        """
-        :param skip_already_exist: Skips keyword already downloaded before. This is needed when re-downloading.
-        :param n_threads: Number of threads to download.
-        :param do_google: Download from google.com (boolean)
-        :param do_naver: Download from naver.com (boolean)
-        :param download_path: Download folder path
-        :param full_resolution: Download full resolution image instead of thumbnails (slow)
-        :param face: Face search mode
-        """
-
-        self.skip = skip_already_exist
-        self.n_threads = n_threads
-        self.do_google = do_google
-        self.do_naver = do_naver
-        self.download_path = download_path
-        self.full_resolution = full_resolution
-        self.face = face
-
+    def __init__(self):
+      
         os.makedirs('./{}'.format(self.download_path), exist_ok=True)
 
     @staticmethod
@@ -403,7 +513,264 @@ class CollectLinks:
     def google_full(self, keyword, add_url=""):
         print('[Full Resolution Mode]')
 
-        self.browser.get("https://www.google.co.kr/search?q={}&tbm=isch{}".format(keyword, add_url))
+        self.browser.get("https://www.google.com/search?q={}&tbm=isch{}".format(keyword, add_url))
+        time.sleep(1)
+
+        elem = self.browser.find_element_by_tag_name("body")
+
+        print('Scraping links')
+
+        self.wait_and_click('//div[@data-ri="0"]')
+        time.sleep(1)
+
+        links = []
+        count = 1
+
+        last_scroll = 0
+        scroll_patience = 0
+
+        while True:
+            try:
+                xpath = '//div[@class="irc_c i8187 immersive-container"]//img[@class="irc_mi"]'
+                imgs = self.browser.find_elements(By.XPATH, xpath)
+
+                for img in imgs:
+                    src = img.get_attribute('src')
+
+                    if src not in links and src is not None:
+                        links.append(src)
+                        print('%d: %s' % (count, src))
+                        count += 1
+
+            except StaleElementReferenceException:
+                # print('[Expected Exception - StaleElementReferenceException]')
+                pass
+            except Exception as e:
+                print('[Exception occurred while collecting links from google_full] {}'.format(e))
+
+            scroll = self.get_scroll()
+            if scroll == last_scroll:
+                scroll_patience += 1
+            else:
+                scroll_patience = 0
+                last_scroll = scroll
+
+            if scroll_patience >= 30:
+                break
+
+            elem.send_keys(Keys.RIGHT)
+
+        links = set(links)
+
+        print('Collect links done. Site: {}, Keyword: {}, Total: {}'.format('google_full', keyword, len(links)))
+        self.browser.close()
+
+        return links
+
+@app.task(bind=True, default_retry_delay=10)
+def fetch_url_content(self, url, scheme='http'):
+    client = MongoClient('127.0.0.1', 27017)
+    db = client.crawled_urls
+    collection = db.results
+    stripped_url = url.strip()
+
+    try:
+        robots = Robots.fetch(scheme + '://' + stripped_url + '/robots.txt')
+    except RequestException:
+        return 'FAILURE: ' + stripped_url + ' : Unable to fetch robots.txt'
+
+    if not robots.allowed(stripped_url, 'just-some-user-agent'):
+        return 'FAILURE: ' + stripped_url + ' : Robots say no'
+
+    try:
+        r = requests.get(scheme + '://' + stripped_url)
+        new_emails = set(re.findall("[a-z0-9\.\-+_]+@[a-z0-9\.\-+_]+\.[a-z]+", r.text, re.I))
+        domains = r.html.absolute_links
+        collection.insert({
+            'url': url,
+            'scheme': 'http',
+            'status': r.status_code,
+            "create_time": time.time(),
+            "result": r.text
+        })
+    except Exception as exc:
+        raise self.retry(exc=exc)
+
+    client.close()
+    return 'SUCCESS: ' + stripped_url
+
+def scroll_bottom(browser, element, range_int):
+    # put a limit to the scrolling
+    if range_int > 50:
+        range_int = 50
+
+    for _ in range(int(range_int / 2)):
+        browser.execute_script("window.scrollBy(0, 1000)")
+        update_activity(browser, state=None)
+        sleep(1)
+
+    return
+
+
+def click_element(browser, element, tryNum=0):
+    try:
+        element.click()
+        update_activity(browser, state=None)
+    except Exception:
+        if tryNum == 0:
+            browser.execute_script(
+                "document.getElementsByClassName('"
+                + element.get_attribute("class")
+                + "')[0].scrollIntoView({ inline: 'center' });"
+            )
+        elif tryNum == 1:
+            browser.execute_script("window.scrollTo(0,0);")
+
+        elif tryNum == 2:
+            browser.execute_script("window.scrollTo(0,document.body.scrollHeight);")
+
+        else:
+            print("attempting last ditch effort for click, `execute_script`")
+            browser.execute_script(
+                "document.getElementsByClassName('"
+                + element.get_attribute("class")
+                + "')[0].click()"
+            )
+            # update server calls after last click attempt by JS
+            update_activity(browser, state=None)
+            # end condition for the recursive function
+            return
+        update_activity(browser, state=None)
+        sleep_actual(1)
+        tryNum += 1
+        click_element(browser, element, tryNum)
+
+def web_address_navigator(browser, link):
+    """Checks and compares current URL of web page and the URL to be
+    navigated and if it is different, it does navigate"""
+    current_url = get_current_url(browser)
+    total_timeouts = 0
+    page_type = None  # file or directory
+
+    # remove slashes at the end to compare efficiently
+    if current_url is not None and current_url.endswith("/"):
+        current_url = current_url[:-1]
+
+    if link.endswith("/"):
+        link = link[:-1]
+        page_type = "dir"  # slash at the end is a directory
+
+    new_navigation = current_url != link
+
+    if current_url is None or new_navigation:
+        link = link + "/" if page_type == "dir" else link  # directory links
+        while True:
+            try:
+                browser.get(link)
+                # update server calls
+                update_activity(browser, state=None)
+                sleep(2)
+                break
+
+            except TimeoutException as exc:
+                if total_timeouts >= 7:
+                    raise TimeoutException(
+                        "Retried {} times to GET '{}' webpage "
+                        "but failed out of a timeout!\n\t{}".format(
+                            total_timeouts,
+                            str(link).encode("utf-8"),
+                            str(exc).encode("utf-8"),
+                        )
+                    )
+                total_timeouts += 1
+                sleep(2)
+
+
+class CollectLinks:
+    def __init__(self):
+        return
+    def tables(self):
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        table = soup.find_all('td', attrs={'class': None})
+        names = [str(c.contents[0]) for c in soup.find_all('td', attrs={'class': None})]
+        str_names = '\n'.join(names)
+        print(str_names)
+        w.write(str_names)
+        w.flush()
+        #driver.find_elements_by_class_name('submit_button')[-1].click()
+        time.sleep(3)
+
+
+    def get_scroll(self):
+        pos = self.browser.execute_script("return window.pageYOffset;")
+        return pos
+
+    def wait_and_click(self, xpath):
+        #  Sometimes click fails unreasonably. So tries to click at all cost.
+        try:
+            w = WebDriverWait(self.browser, 15)
+            elem = w.until(EC.element_to_be_clickable((By.XPATH, xpath)))
+            elem.click()
+        except Exception as e:
+            print('Click time out - {}'.format(xpath))
+            print('Refreshing browser...')
+            self.browser.refresh()
+            time.sleep(2)
+            return self.wait_and_click(xpath)
+
+        return elem
+
+    def google(self, keyword, add_url=""):
+        self.browser.get("https://www.google.com/search?q={}&source=lnms&tbm=isch{}".format(keyword, add_url))
+
+        time.sleep(1)
+
+        print('Scrolling down')
+
+        elem = self.browser.find_element_by_tag_name("body")
+
+        for i in range(60):
+            elem.send_keys(Keys.PAGE_DOWN)
+            time.sleep(0.2)
+
+        try:
+            # btn_more = self.browser.find_element(By.XPATH, '//input[@value="결과 더보기"]')
+            self.wait_and_click('//input[@id="smb"]')
+
+            for i in range(60):
+                elem.send_keys(Keys.PAGE_DOWN)
+                time.sleep(0.2)
+
+        except ElementNotVisibleException:
+            pass
+
+        photo_grid_boxes = self.browser.find_elements(By.XPATH, '//div[@class="rg_bx rg_di rg_el ivg-i"]')
+
+        print('Scraping links')
+
+        links = []
+
+        for box in photo_grid_boxes:
+            try:
+                imgs = box.find_elements(By.TAG_NAME, 'img')
+
+                for img in imgs:
+                    src = img.get_attribute("src")
+                    if src[0] != 'd':
+                        links.append(src)
+
+            except Exception as e:
+                print('[Exception occurred while collecting links from google] {}'.format(e))
+
+        print('Collect links done. Site: {}, Keyword: {}, Total: {}'.format('google', keyword, len(links)))
+        self.browser.close()
+
+        return set(links)
+
+
+    def google_full(self, keyword, add_url=""):
+        print('[Full Resolution Mode]')
+        self.browser.get("https://www.google.com/search?q={}&tbm=isch{}".format(keyword, add_url))
         time.sleep(1)
 
         elem = self.browser.find_element_by_tag_name("body")
@@ -458,7 +825,211 @@ class CollectLinks:
         return links
 
 
-if __name__ == '__main__':
-    collect = CollectLinks()
-    links = collect.naver_full('박보영')
-    print(len(links), links)
+def retry(max_retry_count=3, start_page=None):
+    """
+        Decorator which refreshes the page and tries to execute the function again.
+        Use it like that: @retry() => the '()' are important because its a decorator
+        with params.
+    """
+
+    def real_decorator(org_func):
+        def wrapper(*args, **kwargs):
+            browser = None
+            _start_page = start_page
+
+            # try to find instance of a browser in the arguments
+            # all webdriver classes (chrome, firefox, ...) inherit from Remote class
+            for arg in args:
+                if not isinstance(arg, Remote):
+                    continue
+
+                browser = arg
+                break
+
+            else:
+                for _, value in kwargs.items():
+                    if not isinstance(value, Remote):
+                        continue
+
+                    browser = value
+                    break
+
+            if not browser:
+                print("not able to find browser in parameters!")
+                return org_func(*args, **kwargs)
+
+            if max_retry_count == 0:
+                print("max retry count is set to 0, this function is useless right now")
+                return org_func(*args, **kwargs)
+
+            # get current page if none is given
+            if not start_page:
+                _start_page = browser.current_url
+
+            rv = None
+            retry_count = 0
+            while True:
+                try:
+                    rv = org_func(*args, **kwargs)
+                    break
+                except Exception as e:
+                    # TODO: maybe handle only certain exceptions here
+                    retry_count += 1
+
+                    # if above max retries => throw original exception
+                    if retry_count > max_retry_count:
+                        raise e
+
+                    rv = None
+
+                    # refresh page
+                    browser.get(_start_page)
+
+            return rv
+
+        return wrapper
+
+    return real_decorator
+
+def threaded_crawler_rq(
+    start_url,
+    link_regex,
+    user_agent="",
+    proxies=None,
+    delay=3,
+    max_depth=4,
+    num_retries=2,
+    cache={},
+    max_threads=10,
+    scraper_callback=None,
+):
+
+    crawl_queue = RedisQueue()
+    crawl_queue.push(start_url)
+    # keep track which URL's have seen before
+    robots = {}
+    D = Downloader(delay=delay, user_agent=user_agent, proxies=proxies, cache=cache)
+
+    def process_queue():
+        while len(crawl_queue):
+            url = crawl_queue.pop()
+            no_robots = False
+            if not url or "http" not in url:
+                continue
+            domain = "{}://{}".format(urlparse(url).scheme, urlparse(url).netloc)
+            rp = robots.get(domain)
+            if not rp and domain not in robots:
+                robots_url = "{}/robots.txt".format(domain)
+                rp = get_robots_parser(robots_url)
+                if not rp:
+                    # issue finding robots.txt, still crawl
+                    no_robots = True
+                robots[domain] = rp
+            elif domain in robots:
+                no_robots = True
+            # check url passes robots.txt restrictions
+            if no_robots or rp.can_fetch(user_agent, url):
+                depth = crawl_queue.get_depth(url)
+                if depth == max_depth:
+                    print("Skipping %s due to depth" % url)
+                    continue
+                html = D(url, num_retries=num_retries)
+                if not html:
+                    continue
+                if scraper_callback:
+                    links = scraper_callback(url, html) or []
+                else:
+                    links = []
+                # filter for links matching our regular expression
+                for link in list(get_links(html, link_regex)) + links:
+                    if "http" not in link:
+                        link = clean_link(url, domain, link)
+                    crawl_queue.push(link)
+                    crawl_queue.set_depth(link, depth + 1)
+            else:
+                print("Blocked by robots.txt:", url)
+
+    # wait for all download threads to finish
+    threads = []
+    while threads or len(crawl_queue):
+        for thread in threads:
+            if not thread.is_alive():
+                threads.remove(thread)
+        while len(threads) < max_threads and crawl_queue:
+            # can start some more threads
+            thread = threading.Thread(target=process_queue)
+            thread.setDaemon(True)  # set daemon so main thread can exit w/ ctrl-c
+            thread.start()
+            threads.append(thread)
+
+        for thread in threads:
+            thread.join()
+
+        time.sleep(SLEEP_TIME)
+
+
+
+def mp_threaded_crawler(*args, **kwargs):
+    processes = []
+    num_procs = kwargs.pop("num_procs")
+    if not num_procs:
+        num_procs = multiprocessing.cpu_count()
+    for _ in range(num_procs):
+        proc = multiprocessing.Process(
+            target=threaded_crawler_rq, args=args, kwargs=kwargs
+        )
+        proc.start()
+        processes.append(proc)
+    # wait for processes to complete
+    for proc in processes:
+        proc.join()
+
+def google(keyword, add_url=""):
+    driver.get("https://www.google.com/search?q={}&source=lnms&tbm=isch{}".format(keyword, add_url))
+    time.sleep(1)
+    print('Scrolling down')
+    elem = driver.find_element_by_tag_name("body")
+    for i in range(60):
+        elem.send_keys(Keys.PAGE_DOWN)
+        time.sleep(0.3)
+    try:
+        # btn_more = self.browser.find_element(By.XPATH, '//input[@value="결과 더보기"]')
+        self.wait_and_click('//input[@id="smb"]')
+        for i in range(60):
+            elem.send_keys(Keys.PAGE_DOWN)
+            time.sleep(0.2)
+    except:
+        pass
+    photo_grid_boxes = driver.find_elements(By.XPATH, '//div[@class="rg_bx rg_di rg_el ivg-i"]')
+    print('Scraping links')
+    links = []
+    for box in photo_grid_boxes:
+        try:
+            imgs = box.find_elements(By.TAG_NAME, 'img')
+            for img in imgs:
+                src = img.get_attribute("src")
+                if src[0] != 'd':
+                    links.append(src)
+        except Exception as e:
+            print('[Exception occurred while collecting links from google] {}'.format(e))
+    print('Collect links done. Site: {}, Keyword: {}, Total: {}'.format('google', keyword, len(links)))
+    driver.close()
+    return set(links)
+
+def search_q(driver, name, query):
+    firstnameField = driver.find_element_by_name(name)
+    actions = ActionChains(driver).click(firstnameField).send_keys(query).send_keys(Keys.RETURN)
+    actions.perform()
+    time.sleep(3)
+
+agent = CollectLinks()
+agent.wait_and_click("//")
+# driver = webdriver.Chrome('/usr/local/bin/chromedriver')
+driver = webdriver.Chrome(executable_path='/usr/local/bin/chromedriver')
+driver.get("https://google.com")
+driver.maximize_window()
+
+
+#lement = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CLASS_NAME, "q")))
+#search_q(driver, "q", "numerator")
+google("numerator")
