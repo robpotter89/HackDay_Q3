@@ -100,6 +100,7 @@ SOURCE_INTERESTS_KEY = 'interests'
 METADATA_IMAGE_KEY = 'image'
 
 ADD_IMAGE_URL_MSG_FORMAT = 'Adding: {}'
+ADD_IMAGE_BYTES_MSG_FORMAT = 'Adding bytes.'
 ADD_IMAGE_URL_NO_SIGNATURE_MSG_FORMAT = 'Failed to get signature for: {}'
 ADD_IMAGE_URL_CONFLICT_MSG_FORMAT = 'Conflict, retrying: {}'
 
@@ -250,7 +251,9 @@ class AdLoader(object):
                     retry_num=retry_num
                 )
 
-    def add_image(self, image_url, source_url, email, age, gender, interests):
+    def add_image_url(
+            self, image_url, source_url, email, age, gender, interests
+    ):
         try:
             self.logger.debug(ADD_IMAGE_URL_MSG_FORMAT.format(image_url))
             image_signature, image = self._iss.get_image_signature_from_url(
@@ -280,22 +283,45 @@ class AdLoader(object):
             self.logger.exception()
             self.num_images_errored += 1
 
-    def _get_matched_urls_from_image_matches(self, image_matches):
-        if image_matches:
-            image_match = image_matches[0]
-            sources = image_match['metadata'][METADATA_SOURCES_KEY]
-            matched_urls = [source[SOURCE_URL_KEY] for source in sources]
-            return matched_urls
+    def add_image_bytes(
+            self, image_bytes, source_url, email, age, gender, interests
+    ):
+        try:
+            self.logger.debug(ADD_IMAGE_URL_MSG_FORMAT.format('from bytes'))
+            image_signature, image = self._iss.get_image_signature_from_bytes(
+                image_bytes
+            )
+            if image_signature:
+                self._add_image(
+                    image_signature,
+                    image,
+                    image_signature,
+                    source_url,
+                    email,
+                    age,
+                    gender,
+                    interests
+                )
+
+            else:
+                self.logger.warning(
+                    ADD_IMAGE_URL_NO_SIGNATURE_MSG_FORMAT.format('from bytes')
+                )
+
+        except self.exceptions_to_reraise:
+            raise
+
+        except Exception:
+            self.logger.exception()
+            self.num_images_errored += 1
 
     def get_image_match_by_image_url(self, image_url):
-        image_matches = self._aes.search_image(image_url)
-        return self._get_matched_urls_from_image_matches(image_matches)
+        return self._aes.search_image(image_url)
 
     def get_image_match_by_image_signature_base64(self, image_signature):
-        image_matches = self._aes.search_image_signature_base64(
+        return self._aes.search_image_signature_base64(
             image_signature
         )
-        return self._get_matched_urls_from_image_matches(image_matches)
 
 
 def image_signature_array_to_base64(image_signature_array):
