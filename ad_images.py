@@ -35,13 +35,14 @@ def check_if_iframe_is_ad(driver):
             return True
     return False
 
-def get_ad_images_from_url(url, debug=False):
+
+def get_ad_images_from_url(driver, url, debug=False):
     ads = []
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--incognito")
-    chrome_options.add_argument('--user-agent=%s' % USER_AGENT)
-    driver = webdriver.Chrome(options=chrome_options)
+    #chrome_options = Options()
+    #chrome_options.add_argument("--headless")
+    #chrome_options.add_argument("--incognito")
+    #chrome_options.add_argument('--user-agent=%s' % USER_AGENT)
+    #driver = webdriver.Chrome(options=chrome_options)
     page_pil_image = None
     try:
         driver.get(url)
@@ -77,7 +78,7 @@ def get_ad_images_from_url(url, debug=False):
     finally:
         driver.quit()
 
-    ad_base64_images = []
+    ad_images_bytes = []
     if page_pil_image:
         for ad in ads:
             try:
@@ -94,10 +95,9 @@ def get_ad_images_from_url(url, debug=False):
 
                 ad_pil_image.save(output, format='PNG')
                 output.seek(0)
-                ad_base64_image = base64.b64encode(output.read())
-                ad_base64_images.append(ad_base64_image)
+                ad_images_bytes.append(output.read())
 
             except Exception as e:
                 print('Exception cropping image:', e)
 
-    return ad_base64_images
+    return ad_images_bytes

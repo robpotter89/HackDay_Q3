@@ -17,15 +17,15 @@ chrome_options.add_argument('--user-agent=%s' % user_agent)
 CONFIG_FILE = "accounts.config"
 
 
-def read_all_logins(conf_file):
+def read_all_logins(conf_file=CONFIG_FILE):
     f = open(conf_file, "r")
     lines = f.read().splitlines()
-    accounts = zip(*(lines[x::4] for x in range(0, 3)))
+    accounts = zip(*(lines[x::5] for x in range(0, 4)))
     f.close()
     return accounts
 
 
-def google_login(username, password, meta):  # See test_cookies for example on how to use the cookies field from the dictionary
+def google_login(username, password):  # See test_cookies for example on how to use the cookies field from the dictionary
     driver = webdriver.Chrome(options=chrome_options)
 
     driver.get('https://accounts.google.com/ServiceLogin?hl=en&passive=true&continue=https://www.google.com/')
@@ -57,8 +57,9 @@ def google_login(username, password, meta):  # See test_cookies for example on h
     for cookie in cookies:
         cookie['expiry'] = int(cookie['expiry'])  # expiry being an integer is part of the WebDriver specs
 
-    driver.close()
-    return {'username': username, 'cookies': cookies, 'meta': meta}
+    #driver.close()
+    return driver
+    #return {'username': username, 'cookies': cookies, 'meta': meta}
 
 
 def test_cookies(c):  # Returns true for valid login cookies
