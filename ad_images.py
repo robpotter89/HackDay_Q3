@@ -4,9 +4,36 @@ from time import sleep
 from six import BytesIO
 import base64
 from PIL import Image
+from adblockparser import AdblockRules
 
 USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/77.0.3865.75 Safari/537.36'
 
+
+def check_if_ad(url):
+    with open('easylist.txt', 'r') as file:
+        raw_rules = file.readlines()
+    rules = AdblockRules(raw_rules)
+    return rules.should_block(url)
+
+def check_if_iframe_is_ad(driver):
+    all_links = []
+    all_elements = driver.find_elements_by_xpath(".//*")
+    for element in all_elements:
+        try:
+            link = element.get_attribute('src')
+            if link: all_links.append(link)
+        except:
+            pass
+
+        try:
+            link = element.get_attribute('href')
+            if link: all_links.append(link)
+        except:
+            pass
+    for link in all_links:
+        if link and check_if_ad(link):
+            return True
+    return False
 
 def get_ad_images_from_url(url, debug=False):
     ads = []
@@ -27,12 +54,7 @@ def get_ad_images_from_url(url, debug=False):
                 iframe_location = iframe.location
                 iframe_size = iframe.size
                 driver.switch_to.frame(iframe)
-                iframe_html = (
-                    driver.find_elements_by_xpath("/*")[0].get_attribute(
-                        'outerHTML'
-                    )
-                )
-                is_ad = 'google' in iframe_html
+                is_ad = check_if_iframe_is_ad(driver)
                 if is_ad:
                     ads.append((iframe_location, iframe_size))
 
