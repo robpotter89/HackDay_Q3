@@ -4,6 +4,7 @@ from time import sleep
 from six import BytesIO
 import base64
 from PIL import Image
+from data_access import AdLoader
 
 USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/77.0.3865.75 Safari/537.36'
 
@@ -16,6 +17,7 @@ def get_ad_images_from_url(url, debug=False):
     chrome_options.add_argument('--user-agent=%s' % USER_AGENT)
     driver = webdriver.Chrome(options=chrome_options)
     page_pil_image = None
+    loader = AdLoader(index='test2')
     try:
         driver.get(url)
         sleep(5)
@@ -72,8 +74,7 @@ def get_ad_images_from_url(url, debug=False):
 
                 ad_pil_image.save(output, format='PNG')
                 output.seek(0)
-                ad_base64_image = base64.b64encode(output.read())
-                ad_base64_images.append(ad_base64_image)
+                loader.add_image_bytes(output.read(), url, 'a', 'e', 'c', ['d'])
 
             except Exception as e:
                 print('Exception cropping image:', e)
